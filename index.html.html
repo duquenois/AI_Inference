@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>AI 추론 과정</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    :root {
+      --bg:#f4f7fa; --ink:#1f2937; --muted:#6b7280;
+      --blue1:#60a5fa; --blue2:#a78bfa;
+      --green1:#34d399; --green2:#10b981;
+      --card:#ffffff; --shadow:0 4px 12px rgba(0,0,0,.1);
+      --radius:12px;
+    }
+    body {
+      margin:0; padding:24px;
+      font-family:ui-sans-serif,system-ui,Segoe UI,Apple SD Gothic Neo,Arial;
+      background:var(--bg); color:var(--ink); text-align:center;
+    }
+    h1 { margin:.2rem 0 8px }
+    p.lead { margin:0 0 18px; color:var(--muted) }
+
+    .input-col {
+      width:min(560px,92vw); margin:0 auto 12px;
+      display:flex; flex-direction:column; gap:10px;
+    }
+    .input-col input {
+      width:100%; padding:12px 14px;
+      border:1px solid #d1d5db; border-radius:10px;
+      font-size:14px; background:#fff;
+    }
+    .btns { margin:8px 0 18px }
+    .btn {
+      display:inline-block; padding:10px 16px;
+      border:none; border-radius:10px; cursor:pointer;
+      color:#fff; font-weight:600; margin:0 6px; transition:.2s;
+    }
+    .btn.primary { background:#3b82f6 }
+    .btn.secondary { background:#6b7280 }
+    .btn:hover { filter:brightness(.95) }
+
+    .box {
+      width:min(900px,95vw); margin:16px auto;
+      background:var(--card); border-radius:var(--radius);
+      box-shadow:var(--shadow); padding:18px;
+    }
+    #svgBox{padding:24px}
+    #stepSvg{display:block;margin:0 auto}
+
+    #steps {
+      width:min(700px,95vw); margin:18px auto 0;
+      display:flex; flex-direction:column; gap:12px;
+    }
+    .step {
+      background:linear-gradient(135deg,var(--blue1),var(--blue2));
+      color:#fff; font-weight:700; padding:12px 16px;
+      border-radius:12px; box-shadow:var(--shadow);
+      transform:translateY(12px); opacity:0;
+      animation:fadeIn .5s forwards;
+    }
+    .result-box, .chart-box {
+      background:linear-gradient(135deg,var(--green1),var(--green2));
+      color:#fff; border-radius:var(--radius);
+      box-shadow:0 6px 14px rgba(16,185,129,.25);
+      padding:18px 20px; text-align:left;
+      transform:translateY(12px); opacity:0;
+      animation:fadeIn .5s forwards;
+    }
+    .chart-box {
+      background:#fff; color:#111; text-align:center;
+    }
+    .chart-title{margin:0 0 8px; font-weight:700}
+    .chart{width:100%}
+    .result-title{font-size:18px; font-weight:800; margin:0 0 6px}
+    .result-desc{margin:0; opacity:.95; line-height:1.5}
+
+    @keyframes fadeIn { to{opacity:1; transform:translateY(0)} }
+  </style>
+</head>
+<body>
+  <h1>AI 추론 과정 시각화</h1>
+  <p class="lead">문장을 순서대로 5개 입력하시면 단계별 추론 후 <b>최종 결과</b>가 출력됩니다.</p>
+
+  <div class="input-col">
+    <input id="s1" placeholder="문장 1을 입력하세요" />
+    <input id="s2" placeholder="문장 2를 입력하세요" />
+    <input id="s3" placeholder="문장 3을 입력하세요" />
+    <input id="s4" placeholder="문장 4를 입력하세요" />
+    <input id="s5" placeholder="문장 5를 입력하세요" />
+  </div>
+
+  <div class="btns">
+    <button class="btn primary" onclick="startReasoning()">추론 시작</button>
+    <button class="btn secondary" onclick="resetAll()">초기화</button>
+  </div>
+
+  <div class="box" id="svgBox">
+    <svg id="stepSvg" width="900" height="160"></svg>
+  </div>
+
+  <div id="steps"></div>
+
+  <script>
+    const STEP_LABELS = [
+      "입력 문장 전처리",
+      "특징 추출",
+      "중간 가설 생성",
+      "후보 답안 갱신",
+      "최종 정답 도출"
+    ];
+    const PARTICLES=["은","는","이","가","을","를","의","에","에서","으로","로","와","과"];
+    const CONNECTIVES=["그리고","그러나","그래서","하지만","또한","또","혹은"];
+
+    // 특정 입력과 특정 출력 조건
+    const SPECIAL_INPUTS = [
+      "문장1",
+      "문장2",
+      "문장3",
+      "문장4",
+      "문장5"
+    ];
+    const SPECIAL_OUTPUT = "진짜 정답 짜잔~";
+
+    function softmax(arr){
+      const m=Math.max(...arr); const e=arr.map(v=>Math.exp(v-m));
+      const s=e.reduce((a,b)=>a+b,0); return e.map(v=>v/s);
+    }
+
+    function startReasoning(){
+      resetVisuals();
+      const inputs=[1,2,3,4,5].map(i=>document.getElementById('s'+i).value.trim());
+      if(inputs.some(v=>!v)){alert("5개의 문장을 모두 입력해 주세요.");return;}
+
+      const svg=d3.select('#stepSvg');
+      const svgEl=document.getElementById('stepSvg');
+      const BOX_MAX=900; const W=Math.min(BOX_MAX,Math.floor(window.innerWidth*0.95));
+      svgEl.setAttribute('width',W);
+
+      const nodes=["S1","S2","S3","S4","S5","확률","키워드","정답"];
+      const cx0=70, cy=80, r=26;
+      const stepGap=(W-cx0*2)/(nodes.length-1);
+
+      const addSvgNode=(label,i)=>{
+        const x=cx0+i*stepGap;
+        svg.append('circle').attr('cx',x).attr('cy',cy).attr('r',0).attr('fill','#60a5fa')
+          .transition().duration(500).attr('r',r);
+        svg.append('text').attr('x',x).attr('y',cy+6).attr('text-anchor','middle')
+          .attr('fill','#fff').style('font-weight',700).style('opacity',0).text(label)
+          .transition().delay(520).duration(220).style('opacity',1);
+        if(i>0){
+          const x1=cx0+(i-1)*stepGap+r, x2=x-r;
+          svg.append('line').attr('x1',x1).attr('y1',cy).attr('x2',x1).attr('y2',cy)
+            .attr('stroke','#9ca3af').attr('stroke-width',2)
+            .transition().duration(500).attr('x2',x2);
+        }
+      };
+
+      const stepDelay=900;
+      for(let i=0;i<5;i++){
+        setTimeout(()=>{
+          addSvgNode(nodes[i],i);
+          addStepCard(`Step ${i+1}: ${STEP_LABELS[i]}`);
+        },i*stepDelay);
+      }
+      setTimeout(()=>{addSvgNode("확률",5); showProb(inputs)},5*stepDelay);
+      setTimeout(()=>{addSvgNode("키워드",6); showKeyword(inputs)},6*stepDelay);
+      setTimeout(()=>{addSvgNode("정답",7); showSentence(inputs)},7*stepDelay);
+    }
+
+    function addStepCard(text){
+      const steps=document.getElementById('steps');
+      const div=document.createElement('div');
+      div.className='step'; div.textContent=text;
+      steps.prepend(div);
+    }
+
+    function tokenizeJoined(inputs){
+      const joined=inputs.join(' ').replace(/['"‘’“”]+/g,' ').replace(/\s+/g,' ').trim();
+      let toks=joined.split(/[^가-힣a-zA-Z0-9]+/).filter(t=>t.length>1);
+      toks=toks.map(t=>t.replace(/(은|는|이|가|을|를|의|에|에서|으로|로|와|과)$/,"")).filter(t=>t.length>0);
+      return toks;
+    }
+
+    function showProb(inputs){
+      const tokens=tokenizeJoined(inputs);
+      const freqScore={};
+      tokens.forEach((t,i)=>{
+        let s=1.0; s+=0.5*(tokens.length-i)/tokens.length; if(t.length>=3) s+=0.25;
+        freqScore[t]=(freqScore[t]||0)+s;
+      });
+      let sorted=Object.entries(freqScore).sort((a,b)=>b[1]-a[1]).map(([token,score])=>({token,score}));
+      if(sorted.length===0) sorted=[{token:"Unknown",score:1},{token:"None",score:.9},{token:"Etc",score:.8}];
+      const top3=sorted.slice(0,3);
+      const probs=softmax(top3.map(d=>d.score));
+      const candidates=top3.map((d,i)=>({token:d.token,prob:probs[i]}));
+
+      const steps=document.getElementById('steps');
+      const div=document.createElement('div');
+      div.className='chart-box';
+      div.innerHTML=`<div class="chart-title">후보 확률 분포</div><svg id="probChart" class="chart" width="700" height="260"></svg>`;
+      steps.prepend(div);
+
+      drawChart(candidates);
+    }
+
+    function drawChart(candidates){
+      const chart=d3.select('#probChart'); chart.selectAll('*').remove();
+      const W=700, H=260, x0=70, y0=200;
+      const x=d3.scaleBand().domain(candidates.map(d=>d.token)).range([x0,W-40]).padding(0.35);
+      const y=d3.scaleLinear().domain([0,1]).range([y0,20]);
+      chart.append('g').attr('transform',`translate(0,${y0})`).call(d3.axisBottom(x));
+      chart.append('g').attr('transform',`translate(${x0},0)`).call(d3.axisLeft(y).ticks(5).tickFormat(d=>`${Math.round(d*100)}%`));
+
+      chart.selectAll('rect.bar').data(candidates).enter().append('rect').attr('class','bar')
+        .attr('x',d=>x(d.token)).attr('y',y0).attr('width',x.bandwidth()).attr('height',0).attr('fill','#60a5fa')
+        .transition().duration(600).attr('y',d=>y(d.prob)).attr('height',d=>y0-y(d.prob));
+
+      chart.selectAll('text.val').data(candidates).enter().append('text')
+        .attr('x',d=>x(d.token)+x.bandwidth()/2).attr('y',d=>y(d.prob)-6)
+        .attr('text-anchor','middle').style('font-weight',700).style('fill','#374151')
+        .text(d=>`${(d.prob*100).toFixed(0)}%`);
+    }
+
+    function showKeyword(inputs){
+      const tokens=tokenizeJoined(inputs);
+      const counts={}; tokens.forEach(t=>counts[t]=(counts[t]||0)+1);
+      const sorted=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+      const top=sorted[0]||["Unknown",1];
+
+      const div=document.createElement('div');
+      div.className='result-box';
+      div.innerHTML=`<div class="result-title">키워드 추론: '${top[0]}' (98%)</div>
+        <p class="result-desc">입력된 문장에서 '${sorted.slice(0,3).map(s=>s[0]).join(", ")}' 등이 핵심 단서로 관찰되었습니다. 이 중 '${top[0]}'이(가) 98% 확률로 최종 후보로 선택되었습니다.</p>`;
+      document.getElementById('steps').prepend(div);
+    }
+
+    function showSentence(inputs){
+      // 특정 입력인지 확인
+      if(JSON.stringify(inputs) === JSON.stringify(SPECIAL_INPUTS)){
+        const div=document.createElement('div');
+        div.className='result-box';
+        div.innerHTML=`<div class="result-title">정답 추론:</div><p class="result-desc">${SPECIAL_OUTPUT}</p>`;
+        document.getElementById('steps').prepend(div);
+        return;
+      }
+
+      // 일반 로직
+      const subjSeen=new Set(), objects=[], verbCounts={};
+      inputs.forEach(line=>{
+        const words=line.split(/\s+/).filter(Boolean);
+        if(/^(나|나는|너|너는|우리|우리는|그들|그들은)$/.test(words[0]||"")){
+          const base=words[0].replace(/는$/,""); subjSeen.add(base);
+        }
+        for(let i=1;i<words.length;i++){
+          const w=words[i]; if(CONNECTIVES.includes(w)) continue;
+          if(/다$/.test(w)){verbCounts[w]=(verbCounts[w]||0)+1;}
+          else {
+            const obj=w.replace(/(은|는|이|가|을|를|의|에|에서|으로|로|와|과)$/,"");
+            if(obj&&!PARTICLES.includes(obj)) objects.push(obj);
+          }
+        }
+      });
+      const subj=(subjSeen.has("나")&&subjSeen.has("너"))||subjSeen.has("우리")?"우리":
+                  subjSeen.has("나")?"나":subjSeen.has("너")?"너":"우리";
+      const uniqObjs=[...new Set(objects)].filter(o=>!/^나|너|우리|그들$/.test(o)&&!CONNECTIVES.includes(o));
+      const objStr=uniqObjs.join("와 ");
+      const verb=Object.entries(verbCounts).sort((a,b)=>b[1]-a[1])[0]?.[0]||"좋아한다";
+
+      const div=document.createElement('div');
+      div.className='result-box';
+      div.innerHTML=`<div class="result-title">정답 추론:</div><p class="result-desc">${subj}는 ${objStr} ${verb}</p>`;
+      document.getElementById('steps').prepend(div);
+    }
+
+    function resetVisuals(){
+      document.getElementById('steps').innerHTML='';
+      d3.select('#stepSvg').selectAll('*').remove();
+    }
+    function resetAll(){
+      ['s1','s2','s3','s4','s5'].forEach(id=>document.getElementById(id).value='');
+      resetVisuals();
+    }
+  </script>
+</body>
+</html>
