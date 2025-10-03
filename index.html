@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <title>AI 추론 과정</title>
+  <title>쿠파의 성 추론 로봇</title>
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <style>
     :root {
@@ -66,27 +66,55 @@
       transform:translateY(12px); opacity:0;
       animation:fadeIn .5s forwards;
     }
-    .chart-box {
-      background:#fff; color:#111; text-align:center;
-    }
+    .chart-box { background:#fff; color:#111; text-align:center; }
     .chart-title{margin:0 0 8px; font-weight:700}
     .chart{width:100%}
     .result-title{font-size:18px; font-weight:800; margin:0 0 6px}
     .result-desc{margin:0; opacity:.95; line-height:1.5}
 
     @keyframes fadeIn { to{opacity:1; transform:translateY(0)} }
+
+    /* 팝업 */
+    .popup {
+      position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: #fff;
+      color: #111;
+      border-radius: 12px;
+      box-shadow: 0 6px 18px rgba(0,0,0,.3);
+      padding: 24px 28px;
+      width: min(420px, 90%);
+      z-index: 1001;
+      text-align: center;
+    }
+    .popup h2 { margin: 0 0 12px; font-size: 20px; font-weight: 800; }
+    .popup p { margin: 0 0 16px; line-height: 1.5; }
+    .popup button {
+      background: #3b82f6; border: none;
+      color: #fff; font-weight: 600;
+      border-radius: 8px; padding: 10px 18px;
+      cursor: pointer;
+    }
+    .popup button:hover { filter: brightness(.95); }
+    .overlay {
+      position: fixed;
+      top:0; left:0; right:0; bottom:0;
+      background: rgba(0,0,0,.4);
+      z-index: 1000;
+    }
   </style>
 </head>
 <body>
-  <h1>AI 추론 과정</h1>
-  <p class="lead">문장을 순서대로 5개 입력하시면 단계별 추론 후 <b>최종 결과</b>가 출력됩니다.</p>
+  <h1>쿠파의 성 추론 로봇</h1>
+  <p class="lead">5개의 힌트를 순서대로 입력하면 단계별 추론 후 최종 정답을 도출합니다.</p>
 
   <div class="input-col">
-    <input id="s1" placeholder="문장 1을 입력하세요" />
-    <input id="s2" placeholder="문장 2를 입력하세요" />
-    <input id="s3" placeholder="문장 3을 입력하세요" />
-    <input id="s4" placeholder="문장 4를 입력하세요" />
-    <input id="s5" placeholder="문장 5를 입력하세요" />
+    <input id="s1" placeholder="첫 번째 힌트를 입력하세요" />
+    <input id="s2" placeholder="두 번째 힌트를 입력하세요" />
+    <input id="s3" placeholder="세 번째 힌트를 입력하세요" />
+    <input id="s4" placeholder="네 번째 힌트를 입력하세요" />
+    <input id="s5" placeholder="다섯 번째 힌트를 입력하세요" />
   </div>
 
   <div class="btns">
@@ -100,18 +128,22 @@
 
   <div id="steps"></div>
 
+  <!-- 팝업 -->
+  <div id="popupOverlay" class="overlay" style="display:none;"></div>
+  <div id="answerPopup" class="popup" style="display:none;">
+    <h2>정답 추론 결과</h2>
+    <p id="answerText"></p>
+    <button onclick="closePopup()">닫기</button>
+  </div>
+
   <script>
     const STEP_LABELS = [
-      "입력 문장 전처리",
-      "특징 추출",
+      "입력 텍스트 전처리",
+      "텍스트 특징 추출",
       "중간 가설 생성",
       "후보 답안 갱신",
       "최종 정답 도출"
     ];
-    const PARTICLES=["은","는","이","가","을","를","의","에","에서","으로","로","와","과"];
-    const CONNECTIVES=["그리고","그러나","그래서","하지만","또한","또","혹은"];
-
-    // 특정 입력과 특정 출력 조건
     const SPECIAL_INPUTS = [
       "성벽 위에는 뾰족한 가시 장식이 빽빽하게 솟아 있다",
       "붉은 용암빛이 성문의 돌 틈새로 새어 나온다",
@@ -235,41 +267,34 @@
     }
 
     function showSentence(inputs){
-      // 특정 입력인지 확인
-      if(JSON.stringify(inputs) === JSON.stringify(SPECIAL_INPUTS)){
-        const div=document.createElement('div');
-        div.className='result-box';
-        div.innerHTML=`<div class="result-title">정답 추론:</div><p class="result-desc">${SPECIAL_OUTPUT}</p>`;
-        document.getElementById('steps').prepend(div);
-        return;
+      const isCorrect = JSON.stringify(inputs) === JSON.stringify(SPECIAL_INPUTS);
+      let message;
+      if(isCorrect){
+        message = SPECIAL_OUTPUT;
+      } else {
+        message = "제대로 찾지 못했습니다. 힌트 문장을 정확히 다시 입력하세요.";
       }
 
-      // 일반 로직
-      const subjSeen=new Set(), objects=[], verbCounts={};
-      inputs.forEach(line=>{
-        const words=line.split(/\s+/).filter(Boolean);
-        if(/^(나|나는|너|너는|우리|우리는|그들|그들은)$/.test(words[0]||"")){
-          const base=words[0].replace(/는$/,""); subjSeen.add(base);
-        }
-        for(let i=1;i<words.length;i++){
-          const w=words[i]; if(CONNECTIVES.includes(w)) continue;
-          if(/다$/.test(w)){verbCounts[w]=(verbCounts[w]||0)+1;}
-          else {
-            const obj=w.replace(/(은|는|이|가|을|를|의|에|에서|으로|로|와|과)$/,"");
-            if(obj&&!PARTICLES.includes(obj)) objects.push(obj);
-          }
-        }
-      });
-      const subj=(subjSeen.has("나")&&subjSeen.has("너"))||subjSeen.has("우리")?"우리":
-                  subjSeen.has("나")?"나":subjSeen.has("너")?"너":"우리";
-      const uniqObjs=[...new Set(objects)].filter(o=>!/^나|너|우리|그들$/.test(o)&&!CONNECTIVES.includes(o));
-      const objStr=uniqObjs.join("와 ");
-      const verb=Object.entries(verbCounts).sort((a,b)=>b[1]-a[1])[0]?.[0]||"좋아한다";
-
+      // 아래 박스에도 출력
       const div=document.createElement('div');
       div.className='result-box';
-      div.innerHTML=`<div class="result-title">정답 추론:</div><p class="result-desc">${subj}는 ${objStr} ${verb}</p>`;
+      div.innerHTML=`<div class="result-title">정답 추론</div>
+        <p class="result-desc">${message}</p>`;
       document.getElementById('steps').prepend(div);
+
+      // 팝업에도 출력
+      openPopup(message);
+    }
+
+    function openPopup(message){
+      document.getElementById("popupOverlay").style.display="block";
+      document.getElementById("answerPopup").style.display="block";
+      document.getElementById("answerText").textContent = message;
+    }
+
+    function closePopup(){
+      document.getElementById("popupOverlay").style.display="none";
+      document.getElementById("answerPopup").style.display="none";
     }
 
     function resetVisuals(){
@@ -279,9 +304,8 @@
     function resetAll(){
       ['s1','s2','s3','s4','s5'].forEach(id=>document.getElementById(id).value='');
       resetVisuals();
+      closePopup();
     }
   </script>
 </body>
 </html>
-
-
